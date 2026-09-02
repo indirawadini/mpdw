@@ -1,0 +1,265 @@
+---
+title: "Tugas Praktikum 2 MPDW: Penanganan Autokorelasi"
+author: "Mifta Indira Putri Wardini - M0401241090"
+date: "2026-09-02"
+output: rmdformats::readthedown
+---
+
+# Nomor 1 
+
+## 1.1 Impor Library & Data
+```{r}
+library(readxl)
+library(lmtest)
+
+df_market <- read_excel("C:\\Users\\MIFTA INDIRA\\OneDrive\\Documents\\INDIRA\\IPB University\\Semester 5\\Metode Peramalan Deret Waktu\\Data Tugas P2.xlsx", sheet = "Sheet1")
+
+head(df_market)
+```
+
+
+## 1.2 Pemodelan OLS Dasar
+```{r}
+# Memastikan format numerik
+df_market$`Market share` <- as.numeric(df_market$`Market share`)
+df_market$Price <- as.numeric(df_market$Price)
+
+# Membentuk model regresi awal
+reg_awal1 <- lm(`Market share` ~ Price, data = df_market)
+summary(reg_awal1)
+```
+
+Dari ringkasan di atas, diperoleh persamaan regresi awal. Namun, sebelum model ini dapat digunakan untuk inferensi atau peramalan, perlu dipastikan apakah asumsi non-autokorelasi pada sisaan terpenuhi.
+
+
+## 1.3 Pemeriksaan Autokorelasi 
+
+### Eksplorasi Visual (ACF & PACF)
+```{r}
+residu_awal1 <- residuals(reg_awal1)
+par(mfrow = c(1,2))
+acf(residu_awal1, main="Korelasi Serial: ACF")
+pacf(residu_awal1, main="Korelasi Serial: PACF")
+```
+
+Terdapat lag pada plot ACF yang keluar dari batas interval kepercayaan (garis putus-putus biru), yang memberikan indikasi awal adanya korelasi serial antar sisaan.
+
+
+### Uji Formal Durbin-Watson
+```{r}
+uji_dw1 <- dwtest(reg_awal1)
+uji_dw1
+```
+Pengujian hipotesis dengan Durbin-Watson menghasilkan p-value sebesar 0.0098, di mana nilai ini lebih kecil dari taraf nyata 5% (0.05). Hal ini mengindikasikan tolak $H_0$. Ditambah dengan statistik DW yang bernilai 1.1358 (menjauhi angka 2), dapat disimpulkan bahwa sisaan model regresi awal mengandung masalah autokorelasi positif.
+
+
+## 1.4 Penanganan Autokorelasi 
+
+### Metode Cochrane-Orcutt
+
+```{r}
+# Menghitung estimasi rho dari sisaan OLS
+n1 <- nrow(df_market)
+rho_co1 <- sum(residu_awal1[-1] * residu_awal1[-n1]) / sum(residu_awal1[-n1]^2)
+
+# Transformasi data
+y_co1 <- df_market$`Market share`[-1] - rho_co1 * df_market$`Market share`[-n1]
+x_co1 <- df_market$Price[-1] - rho_co1 * df_market$Price[-n1]
+
+# Model transformasi Cochrane-Orcutt
+reg_co1 <- lm(y_co1 ~ x_co1)
+
+# Mencari Penduga Koefisien Regresi setelah Transformasi
+b0_co1 <- coef(reg_co1)[1] / (1 - rho_co1)
+b1_co1 <- coef(reg_co1)[2]
+
+cat("Persamaan Regresi (Cochrane-Orcutt): Y = ", b0_co1, " + ", b1_co1, "X\n", sep="")
+
+# Pengecekan ulang Durbin-Watson
+dwtest(reg_co1)
+```
+
+Setelah dilakukan transformasi, uji Durbin-Watson menghasilkan statistik DW sebesar 1.9471 dengan p-value yang lebih besar dari $\alpha$ (0.05). Kita gagal menolak $H_0$, yang berarti masalah autokorelasi positif pada model telah berhasil diatasi.
+
+
+### Metode Hildreth-Lu
+
+```{r}
+# Fungsi pendefinisian Hildreth-Lu
+hildreth.lu.func <- function(r, model){
+  x <- model.matrix(model)[,-1]
+  y <- model.response(model.frame(model))
+  n <- length(y)
+  t <- 2:n
+  y <- y[t]-r*y[t-1]
+  x <- x[t]-r*x[t-1]
+  
+  return(lm(y~x))
+}
+
+# Pencarian rho yang meminimumkan SSE dengan rentang -1 hingga 1
+r_grid1 <- seq(-1, 1, by = 0.001)
+tab_hl1 <- data.frame(
+  "rho" = r_grid1, 
+  "SSE" = sapply(r_grid1, function(i){deviance(hildreth.lu.func(i, reg_awal1))})
+)
+
+# Menentukan rho optimum
+rho_opt1 <- tab_hl1$rho[which.min(tab_hl1$SSE)]
+cat("Rho Optimum Hildreth-Lu: ", rho_opt1, "\n")
+
+# Pembentukan model terbaik
+reg_hl1 <- hildreth.lu.func(rho_opt1, reg_awal1)
+
+# Transformasi Balik untuk Koefisien Regresi
+b0_hl1 <- coef(reg_hl1)[1] / (1 - rho_opt1)
+b1_hl1 <- coef(reg_hl1)[2]
+
+cat("Persamaan Regresi (Hildreth-Lu): Y = ", b0_hl1, " + ", b1_hl1, "X\n", sep="")
+
+# Uji autokorelasi ulang
+dwtest(reg_hl1)
+```
+
+Dengan menggunakan nilai $\rho$ optimum dari hasil grid search, statistik DW terkoreksi menjadi 1.9577 dan p-value > 0.05. Angka ini secara empiris menunjukkan bahwa sisaan model hasil transformasi telah saling bebas.
+
+
+## 1.5 Kesimpulan
+```{r}
+# Ekstraksi Sum of Squared Errors (SSE)
+sse_awal1 <- anova(reg_awal1)$`Sum Sq`[-1]
+sse_co1 <- anova(reg_co1)$`Sum Sq`[-1]
+sse_hl1 <- anova(reg_hl1)$`Sum Sq`[-1]
+
+# Perhitungan Mean Squared Error (MSE)
+mse_awal1 <- sse_awal1 / n1
+mse_co1 <- sse_co1 / (n1 - 1)
+mse_hl1 <- sse_hl1 / (n1 - 1)
+
+akurasi1 <- matrix(c(sse_awal1, sse_co1, sse_hl1,
+                     mse_awal1, mse_co1, mse_hl1), nrow=2, ncol=3, byrow=TRUE)
+colnames(akurasi1) <- c("Model Awal", "Cochrane-Orcutt", "Hildreth-Lu")
+row.names(akurasi1) <- c("SSE", "MSE")
+akurasi1
+```
+
+Berdasarkan nilai uji Durbin-Watson, kedua metode berhasil mengatasi permasalahan autokorelasi pada data pertama (p-value > 0.05). Komparasi metrik galat pada tabel di atas menunjukkan bahwa transformasi data sukses menurunkan ukuran error secara signifikan dibandingkan model awal. Secara spesifik, metode Hildreth-Lu sedikit lebih superior dibandingkan Cochrane-Orcutt karena memberikan tingkat error (SSE dan MSE) yang paling minimum akibat penerapan iterasi grid search yang presisi.
+
+
+# Nomor 2
+
+## 2.1 Impor Data
+```{r}
+df_sales <- read_excel("C:\\Users\\MIFTA INDIRA\\OneDrive\\Documents\\INDIRA\\IPB University\\Semester 5\\Metode Peramalan Deret Waktu\\Data Tugas P2.xlsx", sheet = "Sheet2")
+
+head(df_sales)
+```
+
+## 2.2 Pemodelan OLS Dasar
+```{r}
+reg_awal2 <- lm(Sales ~ Advertising, data = df_sales)
+
+summary(reg_awal2)
+```
+
+Model regresi menunjukkan pengaruh positif pengeluaran Advertising terhadap Sales. Agar estimasi koefisien ini bernilai BLUE (Best Linear Unbiased Estimator), pengujian sisaan mutlak diperlukan untuk memastikan tidak ada korelasi antar pengamatan.
+
+
+## 2.3 Pemeriksaan Autokorelasi 
+
+### Eksplorasi Visual (ACF & PACF)
+```{r}
+residu_awal2 <- residuals(reg_awal2)
+
+# Eksplorasi Visual
+par(mfrow = c(1,2))
+acf(residu_awal2, main = "ACF Sisaan")
+pacf(residu_awal2, main = "PACF Sisaan")
+```
+
+Plot ACF terlihat menurun secara sangat lambat (dies down secara gradual) dengan banyak lag yang signifikan menembus batas interval kepercayaan. Pola seperti ini merupakan ciri klasik dari adanya autokorelasi positif yang persisten.
+
+
+### Pemeriksaan dengan Durbin Test 
+```{r}
+dwtest(reg_awal2)
+```
+Nilai statistik DW sangat ekstrem, yakni 0.1620 dengan p-value mendekati nol (< 0.05). Bukti ini memvalidasi secara mutlak penolakan $H_0$. Model OLS awal dipastikan mengandung autokorelasi positif yang sangat parah.
+
+## 2.4 Penanganan Autokorelasi 
+
+### Metode Cochrane-Orcutt
+```{r}
+# Menghitung estimasi rho
+n2 <- nrow(df_sales)
+rho_co2 <- sum(residu_awal2[-1] * residu_awal2[-n2]) / sum(residu_awal2[-n2]^2)
+
+# Transformasi data
+y_co2 <- df_sales$Sales[-1] - rho_co2 * df_sales$Sales[-n2]
+x_co2 <- df_sales$Advertising[-1] - rho_co2 * df_sales$Advertising[-n2]
+
+# Model transformasi Cochrane-Orcutt
+reg_co2 <- lm(y_co2 ~ x_co2)
+
+# Transformasi Balik Koefisien Regresi
+b0_co2 <- coef(reg_co2)[1] / (1 - rho_co2)
+b1_co2 <- coef(reg_co2)[2]
+
+cat("Persamaan Regresi (Cochrane-Orcutt): Y = ", b0_co2, " + ", b1_co2, "X\n", sep="")
+
+# Uji autokorelasi ulang
+dwtest(reg_co2)
+```
+
+Nilai DW yang tadinya sangat rendah (0.1620) berhasil ditarik naik secara drastis menjadi 1.9403. Dengan p-value yang kini gagal tolak $H_0$ (> 0.05), transformasi Cochrane-Orcutt terbukti berhasil memutus rantai korelasi serial pada sisaan.
+
+
+### Metode Hildreth-Lu
+```{r}
+# Pencarian rho optimum
+r_grid2 <- seq(-1, 1, by = 0.001)
+tab_hl2 <- data.frame(
+  "rho" = r_grid2, 
+  "SSE" = sapply(r_grid2, function(i){deviance(hildreth.lu.func(i, reg_awal2))})
+)
+
+# Menentukan rho optimum
+rho_opt2 <- tab_hl2$rho[which.min(tab_hl2$SSE)]
+cat("Rho Optimum Hildreth-Lu: ", rho_opt2, "\n")
+
+# Pembentukan model terbaik
+reg_hl2 <- hildreth.lu.func(rho_opt2, reg_awal2)
+
+# Transformasi Balik Koefisien Regresi
+b0_hl2 <- coef(reg_hl2)[1] / (1 - rho_opt2)
+b1_hl2 <- coef(reg_hl2)[2]
+
+cat("Persamaan Regresi (Hildreth-Lu): Y = ", b0_hl2, " + ", b1_hl2, "X\n", sep="")
+
+# Uji autokorelasi ulang
+dwtest(reg_hl2)
+```
+
+Serupa dengan metode sebelumnya, Hildreth-Lu mampu mengoreksi statistik DW ke angka 1.9393 (p-value > 0.05). Sisaan model regresi yang baru kini telah bebas dari masalah autokorelasi ekstrem.
+
+
+## 2.5 Kesimpulan
+```{r}
+# Ekstraksi SSE
+sse_awal2 <- anova(reg_awal2)$`Sum Sq`[-1]
+sse_co2 <- anova(reg_co2)$`Sum Sq`[-1]
+sse_hl2 <- anova(reg_hl2)$`Sum Sq`[-1]
+
+# Perhitungan MSE
+mse_awal2 <- sse_awal2 / n2
+mse_co2 <- sse_co2 / (n2 - 1)
+mse_hl2 <- sse_hl2 / (n2 - 1)
+
+akurasi2 <- matrix(c(sse_awal2, sse_co2, sse_hl2,
+                     mse_awal2, mse_co2, mse_hl2), nrow=2, ncol=3, byrow=TRUE)
+colnames(akurasi2) <- c("Model Awal", "Cochrane-Orcutt", "Hildreth-Lu")
+row.names(akurasi2) <- c("SSE", "MSE")
+akurasi2
+```
+
+Pada skenario data dengan autokorelasi positif yang sangat persisten (di mana estimasi parameter $\rho$ mencapai angka ~0.9), transformasi penyesuaian terbukti sangat esensial untuk memulihkan keandalan model. Perbandingan metrik galat (SSE dan MSE) di atas menunjukkan bahwa metode Cochrane-Orcutt dan Hildreth-Lu mengembalikan presisi serta tingkat penyusutan galat yang nyaris identik. Ini mengartikan bahwa pada kasus korelasi serial yang sangat kuat, estimasi sisaan OLS langsung dari Cochrane-Orcutt sama efektifnya dengan iterasi optimasi grid dari Hildreth-Lu.
