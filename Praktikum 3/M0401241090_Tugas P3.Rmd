@@ -1,0 +1,256 @@
+---
+title: "Tugas Praktikum Pertemuan 3 MPDW"
+author: "Mifta Indira Putri Wardini - M0401241090"
+date: "2026-09-09"
+output: rmdformats::readthedown
+---
+# Library 
+```{r}
+library(dLagM)
+library(dynlm)
+library(MLmetrics)
+library(lmtest)
+library(car)
+```
+
+# Nomor 1: Market Share vs Price
+## 1. Impor & Pembagian Data 
+```{r}
+dt_market <- data.frame(
+  Periode = 1:20,
+  MarketShare = c(3.63, 4.20, 3.33, 4.54, 2.89, 4.87, 4.90, 5.29, 6.18, 7.20,
+                  7.25, 6.09, 6.80, 8.65, 8.43, 8.29, 7.18, 7.90, 8.45, 8.23),
+  Price = c(0.97, 0.95, 0.99, 0.91, 0.98, 0.90, 0.89, 0.86, 0.85, 0.82,
+            0.79, 0.83, 0.81, 0.77, 0.76, 0.80, 0.83, 0.79, 0.76, 0.78)
+)
+
+head(dt_market)
+```
+
+```{r}
+# Data Splitting
+mkt_train <- dt_market[1:15,]
+mkt_test <- dt_market[16:20,]
+
+# Konversi ke Format Time Series
+ts_train_mkt <- ts(mkt_train)
+ts_test_mkt <- ts(mkt_test)
+ts_mkt <- ts(dt_market)
+```
+
+## 2. Pemodelan Lag Terdistribusi
+
+### 2.1 Model Koyck 
+
+#### Pemodelan
+```{r}
+mdl_koyck <- koyckDlm(x = mkt_train$Price, y = mkt_train$MarketShare)
+summary(mdl_koyck)
+```
+
+Nilai p-value untuk variabel $X_t$ (Price) dan $Y_{t-1}$ (lag Market Share) bernilai $< 0.05$. Hal ini mengindikasikan bahwa kedua variabel tersebut memberikan pengaruh yang signifikan secara statistik terhadap tingkat Market Share saat ini. Model dugaan yang terbentuk adalah:$$\hat{Y_t} = 15.4328 - 13.4703X_t + 0.3651Y_{t-1}$$
+
+#### Akurasi Model Koyck
+```{r}
+fc_koyck <- forecast(model = mdl_koyck, x = mkt_test$Price, h = 5)
+mape_koyck <- MAPE(fc_koyck$forecasts, mkt_test$MarketShare)
+
+cat("MAPE Testing:", mape_koyck, "\n")
+GoF(mdl_koyck) # Akurasi Training
+```
+
+
+### 2.2 Model Distributed Lag (DLM) (Lag = 2)
+
+#### Pemodelan
+```{r}
+mdl_dlm_2 <- dlm(x = mkt_train$Price, y = mkt_train$MarketShare, q = 2)
+summary(mdl_dlm_2)
+```
+Pada model ini, intercept dan variabel $X_{t-1}$ memiliki p-value $< 0.05$, yang berarti lag pertama dari Price berpengaruh signifikan secara statistik terhadap Market Share. Persamaan regresinya adalah:$$\hat{Y_t} = -26.29549 - 24.13651X_t - 0.00163X_{t-1} + 0.34290X_{t-2}$$
+
+#### Akurasi
+```{r}
+fc_dlm_2 <- forecast(model = mdl_dlm_2, x = mkt_test$Price, h = 5)
+mape_dlm2 <- MAPE(fc_dlm_2$forecasts, mkt_test$MarketShare)
+
+cat("MAPE Testing:", mape_dlm2, "\n")
+```
+
+### 2.3 DLM dengan Lag Optimum
+
+#### Pencarian Lag Optimal
+Pencarian lag optimal dilakukan secara iteratif menggunakan nilai Akaike Information Criterion (AIC) terkecil.
+
+```{r}
+finiteDLMauto(formula = MarketShare ~ Price,
+              data = data.frame(mkt_train), q.min = 1, q.max = 10,
+              model.type = "dlm", error.type = "AIC", trace = TRUE)
+```
+Lag optimum didapatkan ketika lag $q = 6$ karena menghasilkan nilai AIC yang paling minimal, yaitu sebesar -4.06421. 
+
+#### Pemodelan
+```{r}
+mdl_dlm_opt <- dlm(x = mkt_train$Price, y = mkt_train$MarketShare, q = 6)
+summary(mdl_dlm_opt)
+```
+
+```{r}
+# Akurasi DLM Optimum
+fc_dlm_opt <- forecast(model = mdl_dlm_opt, x = mkt_test$Price, h = 5)
+mape_dlm_opt <- MAPE(fc_dlm_opt$forecasts, mkt_test$MarketShare)
+cat("MAPE Testing:", mape_dlm_opt, "\n")
+```
+
+### 2.4 Model Autoregressive Distributed Lag (ARDL) - Ordo (1,1)
+
+#### Pemodelan
+```{r}
+mdl_ardl <- ardlDlm(formula = MarketShare ~ Price, data = mkt_train, p = 1, q = 1)
+summary(mdl_ardl)
+```
+
+Persamaan model yang terbentuk dari ARDL(1,1) adalah:$$\hat{Y_t} = 18.1366 - 23.5593X_t + 7.2280X_{t-1} + 0.3028Y_{t-1}$$
+
+#### Akurasi
+```{r}
+fc_ardl <- forecast(model = mdl_ardl, x = mkt_test$Price, h = 5)
+mape_ardl <- MAPE(fc_ardl$forecasts, mkt_test$MarketShare)
+cat("MAPE Testing:", mape_ardl, "\n")
+GoF(mdl_ardl)
+```
+
+Nilai MAPE pada peramalan ARDL(1,1) cukup berimbang dengan nilai MAPE training, yang mengindikasikan model tidak mengalami overfitting yang parah.
+
+## 3. Diagnostik Model dengan Library dynlm
+
+```{r}
+# Bentuk persamaan menggunakan dynlm untuk mempermudah uji asumsi
+dyn_mdl1 <- dynlm(MarketShare ~ Price + L(Price), data = ts_train_mkt)
+dyn_mdl2 <- dynlm(MarketShare ~ Price + L(MarketShare), data = ts_train_mkt)
+dyn_mdl3 <- dynlm(MarketShare ~ Price + L(Price) + L(MarketShare), data = ts_train_mkt)
+dyn_mdl4 <- dynlm(MarketShare ~ Price + L(Price) + L(Price, 2), data = ts_train_mkt)
+```
+
+### 3.1 Uji Heteroskedastisitas (Breusch-Pagan)
+```{r}
+bptest(dyn_mdl1); bptest(dyn_mdl2); bptest(dyn_mdl3); bptest(dyn_mdl4)
+```
+
+Seluruh p-value $> 0.05$. Gagal tolak $H_0$. Asumsi homoskedastisitas (ragam sisaan homogen) terpenuhi untuk semua model.
+
+### 3.2 Uji Normalitas Sisaan (Shapiro-Wilk)
+```{r}
+shapiro.test(residuals(dyn_mdl1))
+shapiro.test(residuals(dyn_mdl2))
+shapiro.test(residuals(dyn_mdl3))
+shapiro.test(residuals(dyn_mdl4))
+```
+Kesimpulan: Seluruh p-value bernilai $> 0.05$. Gagal tolak $H_0$. Sisaan pada keempat model terdistribusi secara normal.
+
+### 3.3 Uji Autokorelasi (Durbin-Watson)
+```{r}
+dwtest(dyn_mdl1); dwtest(dyn_mdl2); dwtest(dyn_mdl3); dwtest(dyn_mdl4)
+```
+
+Seluruh p-value bernilai $> 0.05$. Gagal tolak $H_0$. Tidak terdeteksi adanya pelanggaran autokorelasi pada sisaan.
+
+
+## 4. Evaluasi & Perbandingan Model Terbaik
+
+### 4.1 Kesimpulan
+```{r}
+tbl_akurasi <- data.frame(
+  Model = c("Koyck", "DLM (Lag=2)", "DLM (Optimum Lag=6)", "ARDL (1,1)"),
+  MAPE = c(mape_koyck, mape_dlm2, mape_dlm_opt, mape_ardl)
+)
+tbl_akurasi
+```
+
+Berdasarkan tabel komparasi, Model Koyck adalah model paling optimum karena menghasilkan persentase error peramalan (MAPE) yang paling kecil.
+
+### 4.2 Visualisasi Peramalan
+```{r}
+par(mfrow=c(1,1))
+
+plot(mkt_test$Price, mkt_test$MarketShare, type="b", col="black", pch=16,
+     ylim=c(0,10), xlab="Price (X)", ylab="Market Share (Y)", 
+     main="Perbandingan Peramalan Tiap Model Latihan 1")
+
+lines(mkt_test$Price, fc_koyck$forecasts, col="red", type="b", lwd=2)
+lines(mkt_test$Price, fc_dlm_2$forecasts, col="blue", type="b", lwd=2)
+lines(mkt_test$Price, fc_dlm_opt$forecasts, col="orange", type="b", lwd=2)
+lines(mkt_test$Price, fc_ardl$forecasts, col="green", type="b", lwd=2)
+
+legend("bottomright", legend=c("Aktual", "Koyck", "DLM (q=2)", "DLM (q=6)", "ARDL"),
+       col=c("black", "red", "blue", "orange", "green"),
+       lty=1, lwd=2, pch=c(16, 1, 1, 1, 1), bty="n", cex=0.8)
+```
+
+Grafik lintasan prediksi menguatkan temuan dari nilai MAPE. Model Koyck (merah), DLM lag 1 (biru), dan ARDL (hijau) saling berhimpitan erat menelusuri alur observasi aktual (hitam). Titik-titik akhir prediksi dari ketiga model tersebut hampir bersinggungan secara sempurna dengan realitas data aktual ($\approx 7.2$). Di sisi lain, model DLM lag 2 (oranye) menunjukkan bias prediksi yang melebar secara signifikan di awal fase testing (melonjak ke angka $\approx 8.7$ saat realitasnya di $\approx 8.2$) sebelum kembali melandai mengikuti tren seiring berjalannya waktu. Secara empiris dan visual, Model Koyck berkinerja paling dominan.
+
+
+# Nomor 2: Sales vs Advertising
+## 1. Impor & Pembagian Data 
+```{r}
+dt_sales <- data.frame(
+  Year = 1975:2014,
+  Sales = c(11.7, 12.0, 12.3, 12.8, 13.1, 13.6, 13.9, 14.4, 14.7, 15.3,
+            15.5, 15.8, 16.1, 16.6, 16.9, 16.7, 16.9, 17.4, 17.6, 17.9,
+            18.0, 17.9, 18.0, 18.2, 18.2, 18.3, 18.6, 19.2, 19.3, 19.5,
+            19.2, 19.3, 19.5, 20.0, 20.0, 19.9, 19.8, 19.9, 20.2, 21.0),
+  Advertising = c(9.4, 9.6, 10.0, 10.4, 10.8, 10.9, 11.7, 12.2, 12.5, 12.9,
+                  13.0, 13.2, 13.8, 14.2, 14.6, 14.4, 15.0, 15.4, 15.7, 15.9,
+                  15.9, 16.0, 16.3, 16.2, 16.8, 17.3, 17.6, 18.1, 18.3, 18.5,
+                  18.7, 18.9, 19.2, 20.0, 20.0, 20.3, 20.4, 21.0, 21.5, 22.1)
+)
+
+# Splitting 80% Train (32 data), 20% Test (8 data)
+sales_train <- dt_sales[1:32,]   
+sales_test <- dt_sales[33:40,]
+```
+
+## 2. Pemodelan ARDL
+```{r}
+mdl_ardl_sales <- ardlDlm(formula = Sales ~ Advertising, 
+                          data = sales_train, p = 1, q = 1)
+summary(mdl_ardl_sales)
+```
+
+Berdasarkan output di atas, taksiran parameternya menghasilkan model dinamis sebagai berikut:$$\hat{Y_t} = 1.30304 + 0.30844X_t - 0.20644X_{t-1} + 0.83951Y_{t-1}$$
+
+Persamaan ini memberikan landasan teori mengenai lagged effect dari suatu strategi pemasaran. Dampak investasi iklan terhadap sales terdistribusi lintas waktu. Lonjakan tajam di penjualan dipicu tidak hanya oleh anggaran iklan masif pada periode saat ini ($X_t$), namun dikalibrasi ulang oleh pergerakan investasi iklan sebelumnya ($X_{t-1}$) dan posisi basis penjualan yang sudah dikuasai di masa lalu ($Y_{t-1}$). 
+
+```{r}
+# Prediksi 8 periode ke depan
+fc_sales <- forecast(model = mdl_ardl_sales, x = sales_test$Advertising, h = 8)
+
+# Perhitungan manual MAPE
+mape_sales <- mean(abs((sales_test$Sales - fc_sales$forecasts) / sales_test$Sales)) * 100
+cat("MAPE Model ARDL (1,1):", mape_sales, "%\n")
+```
+
+
+## 3. Penentuan Lag Optimum
+```{r}
+opt_sales <- ardlBoundOrders(data = data.frame(dt_sales), ic = "AIC", 
+                             formula = Sales ~ Advertising,
+                             max.p = 6, max.q = 6)
+opt_sales
+```
+
+```{r}
+# Ekstraksi kombinasi parameter yang memberikan AIC terkecil
+min_p2 <- c()
+for(i in 1:6){
+  min_p2[i] <- min(opt_sales$Stat.table[[i]])
+}
+q_opt2 <- which(min_p2 == min(min_p2, na.rm = TRUE))
+p_opt2 <- which(opt_sales$Stat.table[[q_opt2]] == 
+                min(opt_sales$Stat.table[[q_opt2]], na.rm = TRUE))
+
+data.frame("q_optimum" = q_opt2, "p_optimum" = p_opt2, 
+           "AIC_Terkecil" = opt_sales$min.Stat)
+```
+
+Tabel ekstraksi hasil uji merangkum komputasi iteratif penyeleksian orde ARDL. Kombinasi lag spesifik yang mencetak nilai minimal Akaike Information Criterion (AIC) sebesar -15.00875 secara definitif diraih saat penentuan lag regresor $p = 1$ dan variabel lag terikat $q = 1$. Temuan analitik ini memvalidasi suatu kaidah penting: kompleksitas ruang dimensi model tidak berbanding lurus dengan utilitas prediksi. Menambah jumlah lag di atas ordo satu (first-order delay) terbukti gagal memberikan kontribusi perbaikan model regresi yang berarti terhadap variabilitas data historis penjualan. Oleh karenanya, struktur arsitektur model ARDL(1,1) yang diajukan di awal dikonfirmasi sebagai kerangka kerja regresi deret waktu yang paling fundamental, proporsional, dan superior dari segi efisiensi informasional.  
